@@ -61,7 +61,7 @@ contract('Testing HydroGiftCard', function (accounts) {
   ]
 
   it('common contracts deployed', async () => {
-    instances = await common.initialize(accounts[0], [])
+    instances = await common.initialize(accounts[0], [], accounts[1])
   })
 
   describe('Test HydroToken', async () => {
@@ -133,6 +133,27 @@ contract('Testing HydroGiftCard', function (accounts) {
     })
   })
 
+  async function buyGiftCard(vendorEIN, amount, buyerAddress) {
+    // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
+    await instances.HydroToken.approveAndCall(
+      instances.HydroGiftCard.address,
+      amount,
+      web3.eth.abi.encodeParameter('uint256', vendorEIN),
+      { from: buyerAddress }
+    )
+  }
+
+  async function signRedeem(giftCardId, amount, timestamp, user) {
+    const permissionString = web3.utils.soliditySha3(
+      '0x19', '0x00', instances.HydroGiftCard.address,
+      'I authorize the redemption of this gift card.',
+      giftCardId,
+      amount,
+      timestamp
+    )
+    return await sign(permissionString, user.address, user.private)
+  }
+
   describe('Test HydroGiftCard', async () => {
     it('Says Hello, World', async function () {
       assert.equal(await instances.HydroGiftCard.helloWorld(), "Hello, World")
@@ -141,34 +162,24 @@ contract('Testing HydroGiftCard', function (accounts) {
     describe("vendor actions", async () => {
       it('vendor w/identity can set Offers', async function () {
         // The vendor can set their Offer from one of their own associated addresses...
-        await instances.HydroGiftCard.setOffer(offerAmounts, { from: vendor1.address })
+        await instances.HydroGiftCard.setOffers(offerAmounts, { from: vendor1.address })
 
         // Confirm the vendor's first offer...
-        let retrievedAmounts = await instances.HydroGiftCard.getOffer(vendor1.identity)
+        let retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
         assert.equal(retrievedAmounts[0].valueOf(), offerAmounts[0])
 
         // And expect nothing for the other vendor
-        assert.equal(await instances.HydroGiftCard.getOffer(vendor2.identity), 0)
+        assert.equal(await instances.HydroGiftCard.getOffers(vendor2.identity), 0)
       })
 
       it("vendor w/out identity can't set Offers", async function () {
-        await instances.HydroGiftCard.setOffer(offerAmounts, { from: other1.address })
+        await instances.HydroGiftCard.setOffers(offerAmounts, { from: other1.address })
           .then(() => assert.fail('address with no identity created Offers', 'call should fail'))
           .catch(error => assert.include(error.message, 'The passed address does not have an identity but should', 'unexpected error'))
       })
     })
 
     describe("buyer actions", async () => {
-      async function buyGiftCard(vendorEIN, amount, buyerAddress) {
-        // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-        await instances.HydroToken.approveAndCall(
-          instances.HydroGiftCard.address,
-          amount,
-          web3.eth.abi.encodeParameter('uint256', vendorEIN),
-          { from: buyerAddress }
-        )
-      }
-
       describe("purchasing", async () => {
         it("Buyer w/identity and sufficient HYDRO can buy a vendor's Offer", async function () {
           let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
@@ -388,17 +399,6 @@ contract('Testing HydroGiftCard', function (accounts) {
     })
 
     describe("redeem actions", async () => {
-      async function signRedeem(giftCardId, amount, timestamp, user) {
-        const permissionString = web3.utils.soliditySha3(
-          '0x19', '0x00', instances.HydroGiftCard.address,
-          'I authorize the redemption of this gift card.',
-          giftCardId,
-          amount,
-          timestamp
-        )
-        return await sign(permissionString, user.address, user.private)
-      }
-
       it("Recipient can redeem value at vendor", async function () {
         // Recipien1 should already have a GiftCard
         let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: recipient1.address })
@@ -577,7 +577,7 @@ contract('Testing HydroGiftCard', function (accounts) {
           permission.v, permission.r, permission.s,
           { from: recipient1.address }
         )
-          .then(() => assert.fail("redeemed more than the GiftCard's balance", 'transaction should fail'))
+          .then(() => assert.fail("redeemed an invalid giftCardId", 'transaction should fail'))
           .catch(error => assert.include(error.message, "Invalid giftCardId", 'unexpected error'))
       })
 
@@ -599,5 +599,142 @@ contract('Testing HydroGiftCard', function (accounts) {
       })
     })
 
+  })
+
+  describe("Test VendorSampleContract", async () => {
+    it("Vendor's smart contract can automatically redeem authorized GiftCard funds", async function () {
+      const amount = offerAmounts[0]
+      await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
+      const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+      const giftCardId = giftCardIds[giftCardIds.length - 1]
+
+      const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
+      const vendorInvoiceId = 12345
+
+      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+
+      const timestamp = Math.round(new Date() / 1000) - 1
+      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
+      await instances.HydroGiftCard.redeemAndCall(
+        giftCardId, redeemAmount, timestamp,
+        permission.v, permission.r, permission.s,
+        instances.VendorSampleContract.address, web3.eth.abi.encodeParameter('uint256', vendorInvoiceId),
+        { from: customer1.address }
+      )
+
+      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      assert(vendorNewBalance.eq(vendorOriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+    })
+
+    it("Vendor can't redeem the same funds twice", async function () {
+      const amount = offerAmounts[0]
+      await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
+      const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+      const giftCardId = giftCardIds[giftCardIds.length - 1]
+
+      const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
+      const vendorInvoiceId = 12345
+
+      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+
+      const timestamp = Math.round(new Date() / 1000) - 1
+      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
+      await instances.HydroGiftCard.redeemAndCall(
+        giftCardId, redeemAmount, timestamp,
+        permission.v, permission.r, permission.s,
+        instances.VendorSampleContract.address, web3.eth.abi.encodeParameter('uint256', vendorInvoiceId),
+        { from: customer1.address }
+      )
+
+      // Confirm receipt
+      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      assert(vendorNewBalance.eq(vendorOriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+
+      // Now manually call vendorRedeem with the same values
+      await instances.HydroGiftCard.vendorRedeem(giftCardId, redeemAmount)
+        .then(() => assert.fail("redeemed an unauthorized amount", 'transaction should fail'))
+        .catch(error => assert.include(error.message, "Redemption amount is greater than what is authorized", 'unexpected error'))
+    })
+
+    it("Vendor can't redeem more than authorized", async function () {
+      const amount = offerAmounts[0]
+      await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
+      const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+      const giftCardId = giftCardIds[giftCardIds.length - 1]
+
+      const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
+      const vendorInvoiceId = 12345
+
+      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+
+      const timestamp = Math.round(new Date() / 1000) - 1
+      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
+
+      // First authorize redeemAmount without the automatic redeemAndCall version
+      await instances.HydroGiftCard.redeem(
+        giftCardId, redeemAmount, timestamp,
+        permission.v, permission.r, permission.s,
+        { from: customer1.address }
+      )
+
+      // Now manually call vendorRedeem with an inflated amount
+      const illegalAmount = redeemAmount.mul(web3.utils.toBN("2"))
+      await instances.HydroGiftCard.vendorRedeem(giftCardId, illegalAmount)
+        .then(() => assert.fail("redeemed an unauthorized amount", 'transaction should fail'))
+        .catch(error => assert.include(error.message, "Redemption amount is greater than what is authorized", 'unexpected error'))
+
+      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+
+      assert(vendorNewBalance.eq(vendorOriginalBalance), "Vendor received unauthorized the HYDRO funds")
+    })
+
+    it("Vendor can't redeem an invalid giftCardId", async function () {
+      const giftCardId = 123456
+      const redeemAmount = 10000
+      const vendorInvoiceId = 7890
+
+      const timestamp = Math.round(new Date() / 1000) - 1
+      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
+      await instances.HydroGiftCard.redeemAndCall(
+        giftCardId, redeemAmount, timestamp,
+        permission.v, permission.r, permission.s,
+        instances.VendorSampleContract.address, web3.eth.abi.encodeParameter('uint256', vendorInvoiceId),
+        { from: customer1.address }
+      )
+        .then(() => assert.fail("redeemed an invalid giftCardId", 'transaction should fail'))
+        .catch(error => assert.include(error.message, "Invalid giftCardId", 'unexpected error'))
+    })
+
+    it("Redemption only pays out to vendor's EIN address", async function () {
+      const amount = offerAmounts[0]
+      await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
+      const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+      const giftCardId = giftCardIds[giftCardIds.length - 1]
+
+      const vendorInvoiceId = 12345
+      const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
+
+      let vendor1OriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      let vendor2OriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor2.address))
+
+      const timestamp = Math.round(new Date() / 1000) - 1
+      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
+
+      // Customer invokes 'redeem' but not 'redeemAndCall'
+      await instances.HydroGiftCard.redeem(
+        giftCardId, redeemAmount, timestamp,
+        permission.v, permission.r, permission.s,
+        { from: customer1.address }
+      )
+
+      // But now someone *else* calls vendorRedeem to try to claim it for themselves
+      await instances.HydroGiftCard.vendorRedeem(giftCardId, redeemAmount, { from: vendor2.address })
+
+      let vendor1NewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      let vendor2NewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor2.address))
+
+      assert(vendor1NewBalance.eq(vendor1OriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+      assert(vendor2NewBalance.eq(vendor2OriginalBalance), "Vendor2 received the HYDRO funds it shouldn't have had access to")
+    })
   })
 })

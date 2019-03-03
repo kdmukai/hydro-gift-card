@@ -10,6 +10,11 @@ import "./interfaces/IdentityRegistryInterface.sol";
 import "./interfaces/SnowflakeInterface.sol";
 
 
+interface giftCardRedeemer {
+    function receiveRedeemApproval(uint _giftCardId, uint256 _value, address _giftCardContract, bytes calldata _extraData) external;
+}
+
+
 contract HydroGiftCard is Ownable, SignatureVerifier {
     using SafeMath for uint;
 
@@ -30,10 +35,11 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
 
     uint maxGiftCardId;
     struct GiftCard {
-      uint id;
-      uint vendor;
-      uint customer;
-      uint balance;
+      uint id;          // unique GiftCard identifier
+      uint vendor;      // vendor's EIN
+      uint customer;    // customer's/recipient's EIN
+      uint balance;     // amount of HYDRO remaining
+      uint vendorRedeemAllowed;   // amount authorized for the vendor to transfer
     }
 
     // Mapping of customer's EIN to array of GiftCard IDs
@@ -43,9 +49,6 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     mapping(uint => uint[]) private vendorGiftCardIds;
 
     mapping(uint => GiftCard) private giftCardsById;
-
-    // Mapping of customer's EIN to mapping of vendor's EIN to amount redeemable
-    mapping(uint => mapping(uint => uint)) private redeemAllowed;
 
     // signature variables
     uint public signatureTimeout = 1 days;
@@ -87,7 +90,7 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     /***************************************************************************
     *   Vendor functions
     ***************************************************************************/
-    function setOffer(uint[] memory _amounts) public {
+    function setOffers(uint[] memory _amounts) public {
       uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
       offers[_vendorEIN] = Offer(_amounts);
       emit HydroGiftCardOffersSet(_vendorEIN, _amounts);
@@ -115,7 +118,7 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       }
     }
 
-    function getOffer(uint _vendorEIN) public view returns (uint[] memory) {
+    function getOffers(uint _vendorEIN) public view returns (uint[] memory) {
       return offers[_vendorEIN].amounts;
     }
 
@@ -147,7 +150,7 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
 
       // ...then add to the ledger
       maxGiftCardId += 1;
-      GiftCard memory gc = GiftCard(maxGiftCardId, _vendorEIN, _buyerEIN, _value);
+      GiftCard memory gc = GiftCard(maxGiftCardId, _vendorEIN, _buyerEIN, _value, 0);
       customerGiftCardIds[_buyerEIN].push(gc.id);
       vendorGiftCardIds[_vendorEIN].push(gc.id);
       giftCardsById[maxGiftCardId] = gc;
@@ -232,11 +235,11 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       // GiftCard must exist
       require(giftCardsById[_giftCardId].id != 0, "Invalid giftCardId");
       uint _customerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
-      GiftCard storage _giftCard = giftCardsById[_giftCardId];
+      GiftCard storage giftCard = giftCardsById[_giftCardId];
 
-      require(_giftCard.customer == _customerEIN, "You aren't the owner of this gift card.");
-      require(_giftCard.balance > 0, "Can't redeem an empty gift card.");
-      require(_giftCard.balance >= _amount, "Can't redeem more than gift card's balance");
+      require(giftCard.customer == _customerEIN, "You aren't the owner of this gift card.");
+      require(giftCard.balance > 0, "Can't redeem an empty gift card.");
+      require(giftCard.balance >= _amount, "Can't redeem more than gift card's balance");
 
       // Redemption must be signed by the customer
       require(
@@ -246,7 +249,7 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
                   abi.encodePacked(
                       byte(0x19), byte(0), address(this),
                       "I authorize the redemption of this gift card.",
-                      _giftCard.id, _amount, _timestamp
+                      giftCard.id, _amount, _timestamp
                   )
               ),
               v, r, s
@@ -255,10 +258,52 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       );
 
       // Apply changes
-      _giftCard.balance = _giftCard.balance.sub(_amount);
-      redeemAllowed[_customerEIN][_giftCard.vendor].add(_amount);
+      giftCard.balance = giftCard.balance.sub(_amount);
+      giftCard.vendorRedeemAllowed = giftCard.vendorRedeemAllowed.add(_amount);
 
-      emit HydroGiftCardRedeemAllowed(_giftCardId, _giftCard.vendor, _giftCard.customer, _amount);
+      emit HydroGiftCardRedeemAllowed(_giftCardId, giftCard.vendor, giftCard.customer, _amount);
+    }
+
+    function redeemAndCall(
+      uint _giftCardId, uint _amount, uint _timestamp,
+      uint8 v, bytes32 r, bytes32 s,
+      address _vendorContractAddress, bytes memory _extraData
+    ) public ensureSignatureTimeValid(_timestamp) {
+      /** Version of redeem() that will automatically call the vendor's specified
+          smart contract to accept the redemption and continue processing. **/
+
+      // Will exit with exceptions if redemption authorization fails
+      redeem(_giftCardId, _amount, _timestamp, v, r, s);
+
+      // Invoke the vendor's redemption function in their smart contract
+      giftCardRedeemer vendorContract = giftCardRedeemer(_vendorContractAddress);
+      vendorContract.receiveRedeemApproval(_giftCardId, _amount, address(this), _extraData);
+    }
+
+    function vendorRedeem(uint _giftCardId, uint _amount) public {
+      /*******************************************************************************
+        Called within the vendor's receiveRedeemApproval() in their smart contract to
+        actually transfer the HYDRO out of the GiftCard. To protect against vendor
+        address spoofing, payment will ONLY go to the vendor's address that is linked
+        in their identity; the GiftCard will not pay out to the calling address/smart
+        contract.
+      *******************************************************************************/
+      GiftCard storage giftCard = giftCardsById[_giftCardId];
+
+      require(giftCard.id != 0, "Not a valid giftCardId");
+      require(giftCard.vendorRedeemAllowed >= _amount, "Redemption amount is greater than what is authorized");
+
+      // Retrieve vendor's identity details from ClientRaindrop
+      (address _vendorAddress, string memory vendorCasedHydroID) = clientRaindrop.getDetails(giftCard.vendor);
+
+      // Update the GiftCard's allowance accounting...
+      giftCard.vendorRedeemAllowed = giftCard.vendorRedeemAllowed.sub(_amount);
+
+      // ...and only now do we do the transfer, and only to the address retrieved
+      //  from the EIN identity.
+      hydroToken.transfer(_vendorAddress, _amount);
+
+      emit HydroGiftCardVendorRedeemed(_giftCardId, giftCard.vendor, giftCard.customer, _amount);
     }
 
 
@@ -277,9 +322,9 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     ) {
       GiftCard memory _giftCard = giftCardsById[_id];
 
-      (address _address, string memory _vendorCasedHydroID) = clientRaindrop.getDetails(_giftCard.vendor);
-      (address _address2, string memory _customerCasedHydroID) = clientRaindrop.getDetails(_giftCard.customer);
-      return (_vendorCasedHydroID,_customerCasedHydroID,  _giftCard.balance);
+      (address _vendorAddress, string memory _vendorCasedHydroID) = clientRaindrop.getDetails(_giftCard.vendor);
+      (address _customerAddress, string memory _customerCasedHydroID) = clientRaindrop.getDetails(_giftCard.customer);
+      return (_vendorCasedHydroID, _customerCasedHydroID,  _giftCard.balance);
     }
 
     function getCustomerGiftCardIds() public view returns(uint[] memory giftCardIds) {
@@ -296,4 +341,5 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     event HydroGiftCardRefunded(uint indexed id, uint indexed vendorEIN, uint indexed customerEIN, uint amount);
     event HydroGiftCardTransferred(uint indexed id, uint indexed buyerEIN, uint indexed recipientEIN);
     event HydroGiftCardRedeemAllowed(uint indexed id, uint indexed vendorEIN, uint indexed customerEIN, uint amount);
+    event HydroGiftCardVendorRedeemed(uint indexed id, uint indexed vendorEIN, uint indexed customerEIN, uint amount);
 }
