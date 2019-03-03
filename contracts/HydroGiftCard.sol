@@ -96,30 +96,29 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       emit HydroGiftCardOffersSet(_vendorEIN, _amounts);
     }
 
-    function refundGiftCard(uint _id) public {
+    function getOffers(uint _vendorEIN) public view returns (uint[] memory) {
+      return offers[_vendorEIN].amounts;
+    }
+
+    function refundGiftCard(uint _giftCardId) public {
       /** Refund HYDRO to customer's Snowflake **/
-      GiftCard storage _giftCard = giftCardsById[_id];
-      if (_giftCard.balance == 0) {
+      GiftCard storage giftCard = giftCardsById[_giftCardId];
+      require(giftCard.id != 0, "Invalid giftCardId");
+      uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
+
+      require(giftCard.vendor == _vendorEIN, "You don't have permission to refund this gift card");
+      if (giftCard.balance == 0) {
         // Nothing to do
         return;
       }
-      uint _amountToRefund = _giftCard.balance;
-      _giftCard.balance = 0;
-      hydroToken.approveAndCall(snowflakeAddress, _amountToRefund, abi.encode(_giftCard.customer));
-      emit HydroGiftCardRefunded(_giftCard.id, _giftCard.vendor, _giftCard.customer, _amountToRefund);
-    }
 
-    function refundAllGiftCards() public {
-      /** Refund HYDRO to customer's Snowflake for all GiftCards for vendor **/
-      uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
-      uint[] memory _ids = vendorGiftCardIds[_vendorEIN];
-      for (uint i=0; i<_ids.length; i++) {
-        refundGiftCard(_ids[i]);
-      }
-    }
+      uint _amountToRefund = giftCard.balance;
+      giftCard.balance = 0;
 
-    function getOffers(uint _vendorEIN) public view returns (uint[] memory) {
-      return offers[_vendorEIN].amounts;
+      // Approve refund to snowflake and call the Snowflake contract to accept
+      hydroToken.approveAndCall(snowflakeAddress, _amountToRefund, abi.encode(giftCard.customer));
+
+      emit HydroGiftCardRefunded(giftCard.id, giftCard.vendor, giftCard.customer, _amountToRefund);
     }
 
 

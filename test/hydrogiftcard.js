@@ -166,10 +166,37 @@ contract('Testing HydroGiftCard', function (accounts) {
 
         // Confirm the vendor's first offer...
         let retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
-        assert.equal(retrievedAmounts[0].valueOf(), offerAmounts[0])
+        assert(web3.utils.toBN(retrievedAmounts[0]).eq(web3.utils.toBN(offerAmounts[0])))
 
         // And expect nothing for the other vendor
-        assert.equal(await instances.HydroGiftCard.getOffers(vendor2.identity), 0)
+        retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor2.identity)
+        assert(retrievedAmounts.length == 0)
+      })
+
+      it('vendor can update Offers', async function () {
+        // Confirm the vendor's first offer...
+        let retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
+        assert(web3.utils.toBN(retrievedAmounts[0]).eq(web3.utils.toBN(offerAmounts[0])))
+
+        // Now change the offers
+        let newOffers = [123456, 500, 900]
+        await instances.HydroGiftCard.setOffers(newOffers, { from: vendor1.address })
+
+        // Confirm the vendor's first offer...
+        retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
+        assert(web3.utils.toBN(retrievedAmounts[0]).eq(web3.utils.toBN(newOffers[0])))
+      })
+
+      it('vendor can remove all Offers', async function () {
+        // Confirm the vendor's first offer...
+        let retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
+        assert(retrievedAmounts.length > 0)
+
+        // Now set empty offers
+        await instances.HydroGiftCard.setOffers([], { from: vendor1.address })
+
+        retrievedAmounts = await instances.HydroGiftCard.getOffers(vendor1.identity)
+        assert(retrievedAmounts.length == 0)
       })
 
       it("vendor w/out identity can't set Offers", async function () {
@@ -182,6 +209,9 @@ contract('Testing HydroGiftCard', function (accounts) {
     describe("buyer actions", async () => {
       describe("purchasing", async () => {
         it("Buyer w/identity and sufficient HYDRO can buy a vendor's Offer", async function () {
+          // reset vendor Offers
+          await instances.HydroGiftCard.setOffers(offerAmounts, { from: vendor1.address })
+
           let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
           assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
 
@@ -396,6 +426,54 @@ contract('Testing HydroGiftCard', function (accounts) {
           })
       })
 
+      describe("refunds", async () => {
+        it("vendor can refund GiftCard balance to customer's snowflake", async function () {
+          buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], customer1.address)
+          let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+          assert(giftCardIds.length > 0, "Customer1 doesn't have any GiftCards")
+          let giftCardId = giftCardIds[giftCardIds.length - 1]
+
+          let originalDeposit = web3.utils.toBN(await instances.Snowflake.deposits(customer1.identity, { from: customer1.address }))
+
+          // Initiate the refund
+          await instances.HydroGiftCard.refundGiftCard(giftCardId, { from: vendor1.address })
+
+          // Confirm refund zeroed out the GiftCard
+          let giftCardBalance = web3.utils.toBN(await instances.HydroGiftCard.getGiftCardBalance(giftCardId, { from: vendor1.address }))
+          assert(giftCardBalance.eq(web3.utils.toBN("0")))
+
+          // Verify that the refunded HYDRO landed in the customer's snowflake
+          let newDeposit = web3.utils.toBN(await instances.Snowflake.deposits(customer1.identity, { from: customer1.address }))
+          assert(newDeposit.gt(originalDeposit), "Refund did not get deposited in snowflake")
+          assert(newDeposit.eq(web3.utils.toBN(offerAmounts[0])), "Deposit in snowflake does not match expected refund")
+        })
+
+        it("vendor can't refund an invalid giftCardId", async function () {
+          let giftCardId = 123456
+
+          // Initiate the refund
+          await instances.HydroGiftCard.refundGiftCard(giftCardId, { from: vendor1.address })
+            .then(() => assert.fail("vendor refunded a GiftCard with an invalid giftCardId", 'transaction should fail'))
+            .catch(error => assert.include(error.message, "Invalid giftCardId", 'unexpected error'))
+        })
+
+        it("vendor can't refund a GiftCard they didn't issue", async function () {
+          buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], customer1.address)
+          let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+          assert(giftCardIds.length > 0, "Customer1 doesn't have any GiftCards")
+          let giftCardId = giftCardIds[giftCardIds.length - 1]
+
+          // Initiate the refund -- from the *wrong* vendor
+          await instances.HydroGiftCard.refundGiftCard(giftCardId, { from: vendor2.address })
+            .then(() => assert.fail("vendor refunded a GiftCard they didn't issue", 'transaction should fail'))
+            .catch(error => assert.include(error.message, "You don't have permission to refund this gift card", 'unexpected error'))
+
+          // Confirm refund was not processed
+          let giftCardBalance = web3.utils.toBN(await instances.HydroGiftCard.getGiftCardBalance(giftCardId, { from: vendor1.address }))
+          assert(giftCardBalance.eq(web3.utils.toBN(offerAmounts[0])))
+        })
+
+      })
     })
 
     describe("redeem actions", async () => {
