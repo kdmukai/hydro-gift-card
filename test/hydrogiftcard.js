@@ -306,10 +306,10 @@ contract('Testing HydroGiftCard', function (accounts) {
 
       describe("gifting", async () => {
         it("Buyer can gift to recipient w/identity", async function () {
-          // customer1 should have a GiftCard from previous tests
+          await buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], customer1.address)
           let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
           assert(giftCardIds.length > 0, "Customer1 doesn't have any GiftCards")
-          let giftCardId = giftCardIds[0]
+          let giftCardId = giftCardIds[giftCardIds.length - 1]
 
           // recipient1 shouldn't have any
           let recipientGiftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: recipient1.address })

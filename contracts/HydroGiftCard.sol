@@ -214,16 +214,6 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       emit HydroGiftCardTransferred(_giftCardId, _buyerEIN, _recipientEIN);
     }
 
-    function transferGiftCard(
-        uint _giftCardId, string memory _recipientHydroID,
-        uint8 v, bytes32 r, bytes32 s
-    ) public {
-      /** Convenience version via hydroID **/
-      (uint _recipientEIN, address _address, string memory _casedHydroID) = clientRaindrop.getDetails(_recipientHydroID);
-      transferGiftCard(_giftCardId, _recipientEIN, v, r, s);
-    }
-
-
     /***************************************************************************
     *   Redeem functions
     ***************************************************************************/
