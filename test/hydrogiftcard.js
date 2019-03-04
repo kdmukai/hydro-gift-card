@@ -224,6 +224,15 @@ contract('Testing HydroGiftCard', function (accounts) {
           assert(details[2].eq(web3.utils.toBN(offerAmounts[0])), "GiftCard initial balance does not match original Offer")
         })
 
+        it("Buyer can't buy a denomination the vendor doesn't offer", async function () {
+          let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
+          assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
+
+          await buyGiftCard(vendor1.identity.toNumber(), web3.utils.toBN(offerAmounts[0]).add(web3.utils.toBN("5")), customer1.address)
+            .then(() => assert.fail('GiftCard with unsupported denomination was purchased', 'purchase should fail'))
+            .catch(error => assert.include(error.message, 'Vendor does not offer this denomination', 'unexpected error'))
+        })
+
         it("Buyer w/out sufficient HYDRO can't buy a vendor's Offer", async function () {
           // Customer2 has no HYDRO yet
           let customerBalance = await instances.HydroToken.balanceOf(customer2.address)

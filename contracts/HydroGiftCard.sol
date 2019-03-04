@@ -142,7 +142,15 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       require(offers[_vendorEIN].amounts.length != 0, "Vendor has no available offers");
 
       // Does the vendor offer this amount in a gift card?
-      // TODO:
+      Offer memory vendorOffers = offers[_vendorEIN];
+      bool offerFound = false;
+      for (uint i=0; i<vendorOffers.amounts.length; i++) {
+        if (vendorOffers.amounts[i] == _value) {
+          offerFound = true;
+          break;
+        }
+      }
+      require(offerFound, "Vendor does not offer this denomination");
 
       // Transfer the HYDRO funds into the contract first...
       require(hydroToken.transferFrom(_sender, address(this), _value), "Transfer failed");
@@ -319,6 +327,11 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     function getCustomerGiftCardIds() public view returns(uint[] memory giftCardIds) {
       uint _buyerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
       return customerGiftCardIds[_buyerEIN];
+    }
+
+    function getVendorGiftCardIds() public view returns(uint[] memory giftCardIds) {
+      uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
+      return vendorGiftCardIds[_vendorEIN];
     }
 
 
