@@ -101,9 +101,6 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
     function setOffers(uint[] memory _amounts) public {
       uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
 
-      // Has the vendor added this resolver to their snowflake?
-      require(identityRegistry.isResolverFor(_vendorEIN, address(this)), "The EIN has not set this resolver");
-
       offers[_vendorEIN] = Offer(_amounts);
       emit HydroGiftCardOffersSet(_vendorEIN, _amounts);
     }

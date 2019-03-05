@@ -143,14 +143,7 @@ contract('Testing HydroGiftCard', function (accounts) {
       assert.isTrue(snowflakeBalance.eq(depositAmount), 'Incorrect balance')
     })
 
-    it('HydroGiftCard can be added as a Resolver on snowflakes', async function () {
-      instances.Snowflake.addResolver(
-        instances.HydroGiftCard.address,
-        true,
-        0,   // allowance
-        '0x00', { from: vendor1.address }
-      )
-
+    it('HydroGiftCard can be added as a Resolver', async function () {
       instances.Snowflake.addResolver(
         instances.HydroGiftCard.address,
         true,
@@ -750,7 +743,7 @@ contract('Testing HydroGiftCard', function (accounts) {
     })
 
     it("Redemption only pays out to vendor's EIN address", async function () {
-      const VendorSampleContract = artifacts.require('./_testing/VendorSampleContract.sol')
+      const VendorSampleContract = artifacts.require('./VendorSampleContract.sol')
       const amount = offerAmounts[0]
       await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
       const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })

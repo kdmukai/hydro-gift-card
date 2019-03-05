@@ -4,7 +4,7 @@ const Snowflake = artifacts.require('./_testing/Snowflake.sol')
 const ClientRaindrop = artifacts.require('./_testing/resolvers/ClientRaindrop/ClientRaindrop.sol')
 const OldClientRaindrop = artifacts.require('./_testing/OldClientRaindrop.sol')
 const HydroGiftCard = artifacts.require('./resolvers/HydroGiftCard.sol')
-const VendorSampleContract = artifacts.require('./_testing/VendorSampleContract.sol')
+const VendorSampleContract = artifacts.require('./VendorSampleContract.sol')
 
 async function initialize (owner, users, vendor1) {
   const instances = {}

@@ -1,7 +1,7 @@
 pragma solidity 0.5.0;
 
-import "../interfaces/ClientRaindropInterface.sol";
-import "../zeppelin/ownership/Ownable.sol";
+import "./interfaces/ClientRaindropInterface.sol";
+import "./zeppelin/ownership/Ownable.sol";
 
 interface HydroGiftCardInterface {
   function vendorRedeem(uint _giftCardId, uint _amount) external;
