@@ -3,7 +3,7 @@ const HydroToken = artifacts.require('./_testing/HydroToken.sol')
 const Snowflake = artifacts.require('./_testing/Snowflake.sol')
 const ClientRaindrop = artifacts.require('./_testing/resolvers/ClientRaindrop/ClientRaindrop.sol')
 const OldClientRaindrop = artifacts.require('./_testing/OldClientRaindrop.sol')
-const HydroGiftCard = artifacts.require('./HydroGiftCard.sol')
+const HydroGiftCard = artifacts.require('./resolvers/HydroGiftCard.sol')
 const VendorSampleContract = artifacts.require('./_testing/VendorSampleContract.sol')
 
 async function initialize (owner, users, vendor1) {
@@ -32,11 +32,7 @@ async function initialize (owner, users, vendor1) {
   await instances.Snowflake.setClientRaindropAddress(instances.ClientRaindrop.address, { from: owner })
 
   instances.HydroGiftCard = await HydroGiftCard.new(
-      instances.IdentityRegistry.address,
-      instances.HydroToken.address,
-      instances.Snowflake.address,
-      instances.ClientRaindrop.address,
-      { from: owner }
+      instances.Snowflake.address, { from: owner }
   )
 
   instances.VendorSampleContract = await VendorSampleContract.new({ from: vendor1 })

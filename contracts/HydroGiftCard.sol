@@ -1,13 +1,14 @@
 pragma solidity 0.5.0;
 
 import "./SignatureVerifier.sol";
-import "./zeppelin/ownership/Ownable.sol";
-import "./zeppelin/math/SafeMath.sol";
+import "./SnowflakeResolver.sol";
 
 import "./interfaces/ClientRaindropInterface.sol";
 import "./interfaces/HydroInterface.sol";
 import "./interfaces/IdentityRegistryInterface.sol";
 import "./interfaces/SnowflakeInterface.sol";
+
+import "./zeppelin/math/SafeMath.sol";
 
 
 interface giftCardRedeemer {
@@ -15,17 +16,18 @@ interface giftCardRedeemer {
 }
 
 
-contract HydroGiftCard is Ownable, SignatureVerifier {
+contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
     using SafeMath for uint;
 
     // SC variables
-    address public identityRegistryAddress;
+    SnowflakeInterface private snowflake;
+
+    /* address public identityRegistryAddress; */
     IdentityRegistryInterface private identityRegistry;
-    address public hydroTokenAddress;
+    /* address public hydroTokenAddress; */
     HydroInterface private hydroToken;
-    address public clientRaindropAddress;
+    /* address public clientRaindropAddress; */
     ClientRaindropInterface private clientRaindrop;
-    address public snowflakeAddress;
 
     struct Offer {
       uint[] amounts;   // Available gift card denominations
@@ -62,24 +64,23 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
         _;
     }
 
-
-    constructor (address _identityRegistryAddress, address _hydroTokenAddress, address _snowflakeAddress, address _clientRaindropAddress) public {
-        setAddresses(_identityRegistryAddress, _hydroTokenAddress, _snowflakeAddress, _clientRaindropAddress);
-        maxGiftCardId = 1000;
+    constructor (address _snowflakeAddress) SnowflakeResolver(
+        "HydroGiftCard",
+        "Snowflake-powered HYDRO gift cards",
+        _snowflakeAddress,
+        false,   // _callOnAddition
+        false     // _callOnRemoval
+    ) public {
+      setSnowflakeAddress(_snowflakeAddress);
     }
 
-    // set the hydro token and identity registry addresses
-    function setAddresses(address _identityRegistryAddress, address _hydroTokenAddress, address _snowflakeAddress, address _clientRaindropAddress) public onlyOwner {
-        identityRegistryAddress = _identityRegistryAddress;
-        identityRegistry = IdentityRegistryInterface(identityRegistryAddress);
-
-        hydroTokenAddress = _hydroTokenAddress;
-        hydroToken = HydroInterface(hydroTokenAddress);
-
-        clientRaindropAddress = _clientRaindropAddress;
-        clientRaindrop = ClientRaindropInterface(clientRaindropAddress);
-
+    function setSnowflakeAddress(address _snowflakeAddress) public onlyOwner {
         snowflakeAddress = _snowflakeAddress;
+        snowflake = SnowflakeInterface(snowflakeAddress);
+        identityRegistry = IdentityRegistryInterface(snowflake.identityRegistryAddress());
+        hydroToken = HydroInterface(snowflake.hydroTokenAddress());
+        clientRaindrop = ClientRaindropInterface(snowflake.clientRaindropAddress());
+        maxGiftCardId = 1000;
     }
 
     function helloWorld() public pure returns (string memory) {
@@ -87,11 +88,22 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       return greeting;
     }
 
+    function onAddition(uint ein, uint allowance, bytes memory) public senderIsSnowflake() returns (bool) {}
+    function onRemoval(uint ein, bytes memory) public senderIsSnowflake() returns (bool) {
+      // If EIN is associated with vendor Offers, refund all vendor GiftCards...
+
+      // If EIN is associated wtih customer GiftCards, refund all their GiftCards...
+    }
+
     /***************************************************************************
     *   Vendor functions
     ***************************************************************************/
     function setOffers(uint[] memory _amounts) public {
       uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
+
+      // Has the vendor added this resolver to their snowflake?
+      require(identityRegistry.isResolverFor(_vendorEIN, address(this)), "The EIN has not set this resolver");
+
       offers[_vendorEIN] = Offer(_amounts);
       emit HydroGiftCardOffersSet(_vendorEIN, _amounts);
     }
@@ -112,11 +124,14 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
         return;
       }
 
+      // Escrow account should have sufficient funds
+      require(hydroToken.balanceOf(address(this)) >= giftCard.balance);
+
       uint _amountToRefund = giftCard.balance;
       giftCard.balance = 0;
 
-      // Approve refund to snowflake and call the Snowflake contract to accept
-      hydroToken.approveAndCall(snowflakeAddress, _amountToRefund, abi.encode(giftCard.customer));
+      // Refund balance back into customer's snowflake
+      transferHydroBalanceTo(giftCard.customer, _amountToRefund);
 
       emit HydroGiftCardRefunded(giftCard.id, giftCard.vendor, giftCard.customer, _amountToRefund);
     }
@@ -125,18 +140,12 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
     /***************************************************************************
     *   Buyer functions
     ***************************************************************************/
-    function receiveApproval(address _sender, uint _value, address _tokenAddress, bytes memory _bytes) public {
-      /**
-        Called by the HYDRO contract's approveAndCall function.
-      **/
-      // only accept calls from HYDRO
-      require(_tokenAddress == hydroTokenAddress, "_tokenAddress did not match hydroTokenAddress");
-
-      // Parse the vendor's EIN from the passed in _bytes data
-      uint _vendorEIN = abi.decode(_bytes, (uint));
+    function purchaseOffer(uint _vendorEIN, uint _value) public {
       require(identityRegistry.identityExists(_vendorEIN), "The recipient EIN does not exist.");
+      uint _buyerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
 
-      uint _buyerEIN = identityRegistry.getEIN(_sender);   // throws error if address not associated with an EIN
+      // Has the buyer added this resolver to their snowflake?
+      require(identityRegistry.isResolverFor(_buyerEIN, address(this)), "The EIN has not set this resolver");
 
       // Does this vendor have any offers?
       require(offers[_vendorEIN].amounts.length != 0, "Vendor has no available offers");
@@ -153,7 +162,7 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       require(offerFound, "Vendor does not offer this denomination");
 
       // Transfer the HYDRO funds into the contract first...
-      require(hydroToken.transferFrom(_sender, address(this), _value), "Transfer failed");
+      snowflake.withdrawSnowflakeBalanceFrom(_buyerEIN, address(this), _value);
 
       // ...then add to the ledger
       maxGiftCardId += 1;
@@ -296,9 +305,8 @@ contract HydroGiftCard is Ownable, SignatureVerifier {
       // Update the GiftCard's allowance accounting...
       giftCard.vendorRedeemAllowed = giftCard.vendorRedeemAllowed.sub(_amount);
 
-      // ...and only now do we do the transfer, and only to the address retrieved
-      //  from the EIN identity.
-      hydroToken.transfer(_vendorAddress, _amount);
+      // ...and only now do we do the transfer, and only to the vendor's snowflake
+      transferHydroBalanceTo(giftCard.vendor, _amount);
 
       emit HydroGiftCardVendorRedeemed(_giftCardId, giftCard.vendor, giftCard.customer, _amount);
     }

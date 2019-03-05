@@ -131,16 +131,37 @@ contract('Testing HydroGiftCard', function (accounts) {
       let details = await instances.ClientRaindrop.getDetails(customer1.hydroID)
       assert(details[2] == customer1.hydroID)
     })
+
+    it('can deposit HYDRO into snowflake', async () => {
+      const depositAmount = web3.utils.toBN(offerAmounts[0]).mul(web3.utils.toBN('25'))
+      await instances.HydroToken.approveAndCall(
+        instances.Snowflake.address, depositAmount, web3.eth.abi.encodeParameter('uint256', customer1.identity.toString()),
+        { from: customer1.address }
+      )
+
+      const snowflakeBalance = await instances.Snowflake.deposits(customer1.identity)
+      assert.isTrue(snowflakeBalance.eq(depositAmount), 'Incorrect balance')
+    })
+
+    it('HydroGiftCard can be added as a Resolver on snowflakes', async function () {
+      instances.Snowflake.addResolver(
+        instances.HydroGiftCard.address,
+        true,
+        0,   // allowance
+        '0x00', { from: vendor1.address }
+      )
+
+      instances.Snowflake.addResolver(
+        instances.HydroGiftCard.address,
+        true,
+        web3.utils.toBN(offerAmounts[0]).mul(web3.utils.toBN('10')),   // allowance
+        '0x00', { from: customer1.address }
+      )
+    })
   })
 
   async function buyGiftCard(vendorEIN, amount, buyerAddress) {
-    // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-    await instances.HydroToken.approveAndCall(
-      instances.HydroGiftCard.address,
-      amount,
-      web3.eth.abi.encodeParameter('uint256', vendorEIN),
-      { from: buyerAddress }
-    )
+    await instances.HydroGiftCard.purchaseOffer(vendorEIN, amount, { from: buyerAddress })
   }
 
   async function signRedeem(giftCardId, amount, timestamp, user) {
@@ -233,79 +254,40 @@ contract('Testing HydroGiftCard', function (accounts) {
             .catch(error => assert.include(error.message, 'Vendor does not offer this denomination', 'unexpected error'))
         })
 
-        it("Buyer w/out sufficient HYDRO can't buy a vendor's Offer", async function () {
-          // Customer2 has no HYDRO yet
-          let customerBalance = await instances.HydroToken.balanceOf(customer2.address)
-          assert(customerBalance.lt(web3.utils.toBN(offerAmounts[0])), "Customer2 has too much HYDRO for this test")
-
-          // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-          await instances.HydroToken.approveAndCall(
-            instances.HydroGiftCard.address,
-            offerAmounts[0],
-            web3.eth.abi.encodeParameter('uint256', vendor1.identity.toNumber()),
-            { from: customer2.address }
-          )
-            .then(() => assert.fail('GiftCard was purchased with unsufficient HYDRO', 'purchase should fail'))
-            .catch(error => assert.include(error.message, 'Insufficient balance', 'unexpected error'))
-
-          let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer2.address })
-          assert(giftCardIds.length == 0)
-        })
-
-        it("Buyer w/out identity can't buy a vendor's Offer", async function () {
-          let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
-          assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
-
-          // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-          await instances.HydroToken.approveAndCall(
-            instances.HydroGiftCard.address,
-            offerAmounts[0],
-            web3.eth.abi.encodeParameter('uint256', vendor1.identity.toNumber()),
-            { from: other1.address }
-          )
-            .then(() => assert.fail('bought GiftCard without having an identity', 'transaction should fail'))
-            .catch(error => assert.include(error.message, 'The passed address does not have an identity but should', 'unexpected error'))
-        })
-
-        it("Buyer that doesn't encode vendorEIN can't buy a vendor's Offer", async function () {
-          let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
-          assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
-
-          // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-          await instances.HydroToken.approveAndCall(
-            instances.HydroGiftCard.address,
-            offerAmounts[0],
-            0,
+        it("Buyer w/out sufficient HYDRO allowance can't buy a vendor's Offer", async function () {
+          // Change customer1's allowance
+          let smallAllowance = web3.utils.toBN(offerAmounts[0]).div(web3.utils.toBN('5'))
+          instances.Snowflake.changeResolverAllowances(
+            [instances.HydroGiftCard.address],
+            [smallAllowance],
             { from: customer1.address }
           )
-            .then(() => assert.fail('bought GiftCard without encoding vendorEIN', 'transaction should fail'))
-            .catch(error => assert.include(error.message, 'invalid bytes value', 'unexpected error'))
-        })
 
-        it("Buyer that encodes unknown vendorEIN can't buy a vendor's Offer", async function () {
-          let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
-          assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
-
-          // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-          await instances.HydroToken.approveAndCall(
-            instances.HydroGiftCard.address,
+          await instances.HydroGiftCard.purchaseOffer(
+            vendor1.identity.toNumber(),
             offerAmounts[0],
-            web3.eth.abi.encodeParameter('uint256', 123456),
             { from: customer1.address }
           )
-            .then(() => assert.fail('bought GiftCard without encoding a known vendorEIN', 'transaction should fail'))
-            .catch(error => assert.include(error.message, 'The recipient EIN does not exist', 'unexpected error'))
+            .then(() => assert.fail('GiftCard was purchased with unsufficient HYDRO allowance', 'purchase should fail'))
+            .catch(error => assert.include(error.message, 'Insufficient Allowance', 'unexpected error'))
+
+          // Reset customer's allowance
+          let allowance = web3.utils.toBN(offerAmounts[0]).mul(web3.utils.toBN('25'))
+          instances.Snowflake.changeResolverAllowances(
+            [instances.HydroGiftCard.address],
+            [allowance],
+            { from: customer1.address }
+          )
         })
 
         it("Buyer can't buy from a vendor with no Offers", async function () {
           let customerBalance = await instances.HydroToken.balanceOf(customer1.address)
           assert(customerBalance.gt(web3.utils.toBN(offerAmounts[0])), "Customer1 does not have enough HYDRO")
 
-          // call approveAndCall so that it triggers HydroGiftCard's receiveApproval
-          await instances.HydroToken.approveAndCall(
-            instances.HydroGiftCard.address,
+          // vendor2 has no offers
+          await instances.HydroGiftCard.purchaseOffer(
+            vendor2.identity.toNumber(),
             offerAmounts[0],
-            web3.eth.abi.encodeParameter('uint256', vendor2.identity.toNumber()),
             { from: customer1.address }
           )
             .then(() => assert.fail('bought GiftCard from vendor with no Offers', 'transaction should fail'))
@@ -437,7 +419,14 @@ contract('Testing HydroGiftCard', function (accounts) {
 
       describe("refunds", async () => {
         it("vendor can refund GiftCard balance to customer's snowflake", async function () {
+          let originalEscrowBalance = await instances.HydroToken.balanceOf(instances.HydroGiftCard.address)
+
           buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], customer1.address)
+
+          let newEscrowBalance = await instances.HydroToken.balanceOf(instances.HydroGiftCard.address)
+          assert(newEscrowBalance.gt(originalEscrowBalance))
+          assert(newEscrowBalance.eq(originalEscrowBalance.add(web3.utils.toBN(offerAmounts[0]))))
+
           let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
           assert(giftCardIds.length > 0, "Customer1 doesn't have any GiftCards")
           let giftCardId = giftCardIds[giftCardIds.length - 1]
@@ -454,7 +443,7 @@ contract('Testing HydroGiftCard', function (accounts) {
           // Verify that the refunded HYDRO landed in the customer's snowflake
           let newDeposit = web3.utils.toBN(await instances.Snowflake.deposits(customer1.identity, { from: customer1.address }))
           assert(newDeposit.gt(originalDeposit), "Refund did not get deposited in snowflake")
-          assert(newDeposit.eq(web3.utils.toBN(offerAmounts[0])), "Deposit in snowflake does not match expected refund")
+          assert(newDeposit.eq(originalDeposit.add(web3.utils.toBN(offerAmounts[0]))), "Deposit in snowflake does not match expected refund")
         })
 
         it("vendor can't refund an invalid giftCardId", async function () {
@@ -698,7 +687,7 @@ contract('Testing HydroGiftCard', function (accounts) {
       const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
       const vendorInvoiceId = 12345
 
-      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      let originalDeposit = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
 
       const timestamp = Math.round(new Date() / 1000) - 1
       const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
@@ -709,8 +698,8 @@ contract('Testing HydroGiftCard', function (accounts) {
         { from: customer1.address }
       )
 
-      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-      assert(vendorNewBalance.eq(vendorOriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+      let newDeposit = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
+      assert(newDeposit.eq(originalDeposit.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds into their snowflake")
     })
 
     it("Vendor can't redeem the same funds twice", async function () {
@@ -722,7 +711,7 @@ contract('Testing HydroGiftCard', function (accounts) {
       const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
       const vendorInvoiceId = 12345
 
-      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
+      let originalBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
 
       const timestamp = Math.round(new Date() / 1000) - 1
       const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
@@ -734,8 +723,8 @@ contract('Testing HydroGiftCard', function (accounts) {
       )
 
       // Confirm receipt
-      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-      assert(vendorNewBalance.eq(vendorOriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+      let newBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
+      assert(newBalance.eq(originalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds into their snowflake")
 
       // Now manually call vendorRedeem with the same values
       await instances.HydroGiftCard.vendorRedeem(giftCardId, redeemAmount)
@@ -743,39 +732,7 @@ contract('Testing HydroGiftCard', function (accounts) {
         .catch(error => assert.include(error.message, "Redemption amount is greater than what is authorized", 'unexpected error'))
     })
 
-    it("Vendor can't redeem more than authorized", async function () {
-      const amount = offerAmounts[0]
-      await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
-      const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
-      const giftCardId = giftCardIds[giftCardIds.length - 1]
-
-      const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
-      const vendorInvoiceId = 12345
-
-      let vendorOriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-
-      const timestamp = Math.round(new Date() / 1000) - 1
-      const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
-
-      // First authorize redeemAmount without the automatic redeemAndCall version
-      await instances.HydroGiftCard.redeem(
-        giftCardId, redeemAmount, timestamp,
-        permission.v, permission.r, permission.s,
-        { from: customer1.address }
-      )
-
-      // Now manually call vendorRedeem with an inflated amount
-      const illegalAmount = redeemAmount.mul(web3.utils.toBN("2"))
-      await instances.HydroGiftCard.vendorRedeem(giftCardId, illegalAmount)
-        .then(() => assert.fail("redeemed an unauthorized amount", 'transaction should fail'))
-        .catch(error => assert.include(error.message, "Redemption amount is greater than what is authorized", 'unexpected error'))
-
-      let vendorNewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-
-      assert(vendorNewBalance.eq(vendorOriginalBalance), "Vendor received unauthorized the HYDRO funds")
-    })
-
-    it("Vendor can't redeem an invalid giftCardId", async function () {
+    it("Customer can't redeem an invalid giftCardId", async function () {
       const giftCardId = 123456
       const redeemAmount = 10000
       const vendorInvoiceId = 7890
@@ -793,6 +750,7 @@ contract('Testing HydroGiftCard', function (accounts) {
     })
 
     it("Redemption only pays out to vendor's EIN address", async function () {
+      const VendorSampleContract = artifacts.require('./_testing/VendorSampleContract.sol')
       const amount = offerAmounts[0]
       await buyGiftCard(vendor1.identity.toNumber(), amount, customer1.address)
       const giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
@@ -801,26 +759,29 @@ contract('Testing HydroGiftCard', function (accounts) {
       const vendorInvoiceId = 12345
       const redeemAmount = web3.utils.toBN(amount).div(web3.utils.toBN("5"))
 
-      let vendor1OriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-      let vendor2OriginalBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor2.address))
+      let vendor1OriginalBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
+      let vendor2OriginalBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor2.identity, { from: vendor2.address }))
 
       const timestamp = Math.round(new Date() / 1000) - 1
       const permission = await signRedeem(giftCardId, redeemAmount, timestamp, customer1)
 
-      // Customer invokes 'redeem' but not 'redeemAndCall'
-      await instances.HydroGiftCard.redeem(
+      // Vendor2 sets up a phishing contract...
+      instances.EvilVendorSampleContract = await VendorSampleContract.new({ from: vendor2.address })
+      await instances.EvilVendorSampleContract.setAddresses(instances.ClientRaindrop.address, { from: vendor2.address })
+
+      // ...and fools customer1 into submitting a redemption call to their evil contract
+      await instances.HydroGiftCard.redeemAndCall(
         giftCardId, redeemAmount, timestamp,
         permission.v, permission.r, permission.s,
+        instances.EvilVendorSampleContract.address, web3.eth.abi.encodeParameter('uint256', vendorInvoiceId),
         { from: customer1.address }
       )
 
-      // But now someone *else* calls vendorRedeem to try to claim it for themselves
-      await instances.HydroGiftCard.vendorRedeem(giftCardId, redeemAmount, { from: vendor2.address })
+      let vendor1NewBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor1.identity, { from: vendor1.address }))
+      let vendor2NewBalance = web3.utils.toBN(await instances.Snowflake.deposits(vendor2.identity, { from: vendor2.address }))
 
-      let vendor1NewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor1.address))
-      let vendor2NewBalance = web3.utils.toBN(await instances.HydroToken.balanceOf(vendor2.address))
-
-      assert(vendor1NewBalance.eq(vendor1OriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds")
+      // But it shouldn't matter; the funds will go to vendor1's snowflake regardless
+      assert(vendor1NewBalance.eq(vendor1OriginalBalance.add(web3.utils.toBN(redeemAmount))), "Vendor did not receive the HYDRO funds in their snowflake")
       assert(vendor2NewBalance.eq(vendor2OriginalBalance), "Vendor2 received the HYDRO funds it shouldn't have had access to")
     })
   })

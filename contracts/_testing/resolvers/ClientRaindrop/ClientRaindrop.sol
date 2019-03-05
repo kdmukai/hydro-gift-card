@@ -2,7 +2,7 @@ pragma solidity ^0.5.0;
 
 import "./StringUtils.sol";
 import "./OldClientRaindropInterface.sol";
-import "../../SnowflakeResolver.sol";
+import "../../../SnowflakeResolver.sol";
 import "../../../interfaces/HydroInterface.sol";
 import "../../../interfaces/IdentityRegistryInterface.sol";
 import "../../../interfaces/SnowflakeInterface.sol";

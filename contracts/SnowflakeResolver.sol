@@ -1,10 +1,9 @@
 pragma solidity ^0.5.0;
 
-import "../interfaces/HydroInterface.sol";
-import "../interfaces/SnowflakeInterface.sol";
-import "../zeppelin/ownership/Ownable.sol";
+import "./interfaces/HydroInterface.sol";
+import "./interfaces/SnowflakeInterface.sol";
+import "./zeppelin/ownership/Ownable.sol";
 
-import "./interfaces/SnowflakeResolverInterface.sol";
 
 contract SnowflakeResolver is Ownable {
     string public snowflakeName;
