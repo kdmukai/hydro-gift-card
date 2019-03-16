@@ -83,16 +83,28 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
         maxGiftCardId = 1000;
     }
 
-    function helloWorld() public pure returns (string memory) {
-      string memory greeting = "Hello, World";
-      return greeting;
-    }
-
     function onAddition(uint ein, uint allowance, bytes memory) public senderIsSnowflake() returns (bool) {}
     function onRemoval(uint ein, bytes memory) public senderIsSnowflake() returns (bool) {
-      // If EIN is associated with vendor Offers, refund all vendor GiftCards...
+      // We don't need to verify the input 'ein' because of the senderIsSnowflake check.
 
-      // If EIN is associated wtih customer GiftCards, refund all their GiftCards...
+      // If EIN is associated with vendor Offers, refund all vendor GiftCards
+      uint[] memory vendorCards = vendorGiftCardIds[ein];
+      for (uint i=0; i<vendorCards.length; i++) {
+        refund(i);
+      }
+      if (vendorCards.length > 0) {
+        offers[ein] = Offer([]);
+        vendorGiftCardIds[ein] = []
+      }
+
+      // If EIN is associated wtih customer GiftCards, refund all their GiftCards
+      uint[] memory customerCards = customerGiftCardIds[ein];
+      for (uint j=0; j<customerCards.length; j++) {
+        refund(j);
+      }
+      if (customerCards.length > 0) {
+        customerGiftCardIds[ein] = [];
+      }
     }
 
     /***************************************************************************
@@ -109,8 +121,27 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
       return offers[_vendorEIN].amounts;
     }
 
+    /* Refund HYDRO to customer's Snowflake */
+    function refund(uint _giftCardId) private {
+      GiftCard storage giftCard = giftCardsById[_giftCardId];
+      require(giftCard.id != 0, "Invalid giftCardId");
+
+      // Escrow account should have sufficient funds
+      require(hydroToken.balanceOf(address(this)) >= giftCard.balance);
+
+      uint _amountToRefund = giftCard.balance;
+
+      // Zero out the gift card
+      giftCard.balance = 0;
+
+      // Refund balance back into customer's snowflake
+      transferHydroBalanceTo(giftCard.customer, _amountToRefund);
+
+      emit HydroGiftCardRefunded(giftCard.id, giftCard.vendor, giftCard.customer, _amountToRefund);
+    }
+
+    /* Refund HYDRO to customer's Snowflake */
     function refundGiftCard(uint _giftCardId) public {
-      /** Refund HYDRO to customer's Snowflake **/
       GiftCard storage giftCard = giftCardsById[_giftCardId];
       require(giftCard.id != 0, "Invalid giftCardId");
       uint _vendorEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
@@ -121,16 +152,7 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
         return;
       }
 
-      // Escrow account should have sufficient funds
-      require(hydroToken.balanceOf(address(this)) >= giftCard.balance);
-
-      uint _amountToRefund = giftCard.balance;
-      giftCard.balance = 0;
-
-      // Refund balance back into customer's snowflake
-      transferHydroBalanceTo(giftCard.customer, _amountToRefund);
-
-      emit HydroGiftCardRefunded(giftCard.id, giftCard.vendor, giftCard.customer, _amountToRefund);
+      refund(_giftCardId);
     }
 
 
@@ -179,21 +201,26 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
       // GiftCard must exist
       require(giftCardsById[_giftCardId].id != 0, "Invalid _giftCardId");
       uint _buyerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
-      GiftCard storage _giftCard = giftCardsById[_giftCardId];
+      GiftCard storage giftCard = giftCardsById[_giftCardId];
 
-      require(_giftCard.customer == _buyerEIN, "You aren't the owner of this gift card.");
-      require(_giftCard.balance > 0, "Can't transfer an empty gift card.");
+      require(giftCard.customer == _buyerEIN, "You aren't the owner of this gift card.");
+      require(giftCard.balance > 0, "Can't transfer an empty gift card.");
       identityRegistry.getIdentity(_recipientEIN);     // throws error if unknown EIN
+
+      // Many addresses might be associated with the customer's EIN, but redemption
+      //  must be signed by the address associated with the customer's ClientRaindrop
+      (address _buyerAddress, string memory buyerCasedHydroID) = clientRaindrop.getDetails(giftCard.customer);
+      require(msg.sender == _buyerAddress, "Transfer was not approved from the clientRaindrop address");
 
       // Transfer must be signed by the customer
       require(
           isSigned(
-              msg.sender,
+              _buyerAddress,
               keccak256(
                   abi.encodePacked(
                       byte(0x19), byte(0), address(this),
                       "I authorize the transfer of this gift card.",
-                      _giftCard.id, _recipientEIN
+                      giftCard.id, _recipientEIN
                   )
               ),
               v, r, s
@@ -219,7 +246,7 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
       }
 
       // Transfer the ownership in the object...
-      _giftCard.customer = _recipientEIN;
+      giftCard.customer = _recipientEIN;
 
       // ...and in the recipient's mapping
       uint[] storage recipientCardIds = customerGiftCardIds[_recipientEIN];
@@ -231,23 +258,30 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
     /***************************************************************************
     *   Redeem functions
     ***************************************************************************/
+    /* Gift cards can only be redeemed by the holder's Raindrop address */
     function redeem(
         uint _giftCardId, uint _amount, uint _timestamp,
         uint8 v, bytes32 r, bytes32 s
     ) public ensureSignatureTimeValid(_timestamp) {
       // GiftCard must exist
       require(giftCardsById[_giftCardId].id != 0, "Invalid giftCardId");
-      uint _customerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
       GiftCard storage giftCard = giftCardsById[_giftCardId];
+
+      uint _customerEIN = identityRegistry.getEIN(msg.sender);   // throws error if address not associated with an EIN
 
       require(giftCard.customer == _customerEIN, "You aren't the owner of this gift card.");
       require(giftCard.balance > 0, "Can't redeem an empty gift card.");
       require(giftCard.balance >= _amount, "Can't redeem more than gift card's balance");
 
+      // Many addresses might be associated with the customer's EIN, but redemption
+      //  must be signed by the address associated with the customer's ClientRaindrop
+      (address _customerAddress, string memory customerCasedHydroID) = clientRaindrop.getDetails(giftCard.customer);
+      require(msg.sender == _customerAddress, "Redeem was not approved from the clientRaindrop address");
+
       // Redemption must be signed by the customer
       require(
           isSigned(
-              msg.sender,
+              _customerAddress,
               keccak256(
                   abi.encodePacked(
                       byte(0x19), byte(0), address(this),
@@ -267,14 +301,13 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
       emit HydroGiftCardRedeemAllowed(_giftCardId, giftCard.vendor, giftCard.customer, _amount);
     }
 
+    /*  Version of redeem() that will automatically call the vendor's specified
+        smart contract to accept the redemption and continue processing. */
     function redeemAndCall(
       uint _giftCardId, uint _amount, uint _timestamp,
       uint8 v, bytes32 r, bytes32 s,
       address _vendorContractAddress, bytes memory _extraData
     ) public ensureSignatureTimeValid(_timestamp) {
-      /** Version of redeem() that will automatically call the vendor's specified
-          smart contract to accept the redemption and continue processing. **/
-
       // Will exit with exceptions if redemption authorization fails
       redeem(_giftCardId, _amount, _timestamp, v, r, s);
 
@@ -283,21 +316,16 @@ contract HydroGiftCard is SnowflakeResolver, SignatureVerifier {
       vendorContract.receiveRedeemApproval(_giftCardId, _amount, address(this), _extraData);
     }
 
-    function vendorRedeem(uint _giftCardId, uint _amount) public {
-      /*******************************************************************************
-        Called within the vendor's receiveRedeemApproval() in their smart contract to
+    /*  Called within the vendor's receiveRedeemApproval() in their smart contract to
         actually transfer the HYDRO out of the GiftCard. To protect against vendor
         address spoofing, payment will ONLY go to the vendor's address that is linked
         in their identity; the GiftCard will not pay out to the calling address/smart
-        contract.
-      *******************************************************************************/
+        contract. */
+    function vendorRedeem(uint _giftCardId, uint _amount) public {
       GiftCard storage giftCard = giftCardsById[_giftCardId];
 
       require(giftCard.id != 0, "Not a valid giftCardId");
       require(giftCard.vendorRedeemAllowed >= _amount, "Redemption amount is greater than what is authorized");
-
-      // Retrieve vendor's identity details from ClientRaindrop
-      (address _vendorAddress, string memory vendorCasedHydroID) = clientRaindrop.getDetails(giftCard.vendor);
 
       // Update the GiftCard's allowance accounting...
       giftCard.vendorRedeemAllowed = giftCard.vendorRedeemAllowed.sub(_amount);

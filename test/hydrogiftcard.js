@@ -83,6 +83,12 @@ contract('Testing HydroGiftCard', function (accounts) {
         amount,
         { from: accounts[0] }
       )
+
+      await instances.HydroToken.transfer(
+        recipient2.address,
+        amount,
+        { from: accounts[0] }
+      )
     })
   })
 
@@ -141,6 +147,11 @@ contract('Testing HydroGiftCard', function (accounts) {
 
       const snowflakeBalance = await instances.Snowflake.deposits(customer1.identity)
       assert.isTrue(snowflakeBalance.eq(depositAmount), 'Incorrect balance')
+
+      await instances.HydroToken.approveAndCall(
+        instances.Snowflake.address, depositAmount, web3.eth.abi.encodeParameter('uint256', recipient2.identity.toString()),
+        { from: recipient2.address }
+      )
     })
 
     it('HydroGiftCard can be added as a Resolver', async function () {
@@ -149,6 +160,13 @@ contract('Testing HydroGiftCard', function (accounts) {
         true,
         web3.utils.toBN(offerAmounts[0]).mul(web3.utils.toBN('10')),   // allowance
         '0x00', { from: customer1.address }
+      )
+
+      instances.Snowflake.addResolver(
+        instances.HydroGiftCard.address,
+        true,
+        web3.utils.toBN(offerAmounts[0]).mul(web3.utils.toBN('10')),   // allowance
+        '0x00', { from: recipient2.address }
       )
     })
   })
@@ -169,9 +187,6 @@ contract('Testing HydroGiftCard', function (accounts) {
   }
 
   describe('Test HydroGiftCard', async () => {
-    it('Says Hello, World', async function () {
-      assert.equal(await instances.HydroGiftCard.helloWorld(), "Hello, World")
-    })
 
     describe("vendor actions", async () => {
       it('vendor w/identity can set Offers', async function () {
@@ -407,7 +422,54 @@ contract('Testing HydroGiftCard', function (accounts) {
           )
             .then(() => assert.fail('transferred GiftCard to invalid EIN', 'transaction should fail'))
             .catch(error => assert.include(error.message, 'The identity does not exist', 'unexpected error'))
-          })
+        })
+
+        it("Buyer can't confirm gift/transfer from non-raindrop address", async function () {
+          // Add a new address to the buyer's identity
+          const altAddress = accounts[8]
+          const timestamp = Math.round(new Date() / 1000) - 1
+          const addAddrPermissionString = web3.utils.soliditySha3(
+            '0x19', '0x00', instances.IdentityRegistry.address,
+            'I authorize adding this address to my Identity.',
+            customer1.identity, altAddress, timestamp
+          )
+          const addAddrPermission = await sign(addAddrPermissionString, customer1.address, customer1.private);
+          await instances.IdentityRegistry.addAssociatedAddress(
+            customer1.address, altAddress,
+            addAddrPermission.v, addAddrPermission.r, addAddrPermission.s,
+            timestamp,
+            { from: altAddress }
+          )
+
+          // confirm
+          assert(await instances.IdentityRegistry.isAssociatedAddressFor(customer1.identity, altAddress), "Newly added address was not associated with EIN")
+
+          buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], customer1.address)
+          let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: customer1.address })
+          assert(giftCardIds.length > 0, "Customer1 doesn't have any GiftCards")
+          let giftCardId = giftCardIds[giftCardIds.length - 1]
+
+
+          // Build the string the GiftCard holder will have to sign in order to transfer.
+          const permissionString = web3.utils.soliditySha3(
+            '0x19', '0x00', instances.HydroGiftCard.address,
+            'I authorize the transfer of this gift card.',
+            giftCardId, recipient1.identity
+          )
+
+          // But this time we sign it using the non-raindrop address that we just added
+          const permission = await sign(permissionString, altAddress, "0x1711e5c516428d875c14dac234f36bbf3b4622aeac00566483a8087ed5a97297")
+
+          // And send the transfer call from the non-raindrop address
+          await instances.HydroGiftCard.transferGiftCard(
+            giftCardId, recipient1.identity,
+            permission.v, permission.r, permission.s,
+            { from: altAddress }
+          )
+            .then(() => assert.fail('transferred GiftCard from non-raindrop address', 'transaction should fail'))
+            .catch(error => assert.include(error.message, 'Transfer was not approved from the clientRaindrop address', 'unexpected error'))
+        })
+
       })
 
       describe("refunds", async () => {
@@ -657,6 +719,8 @@ contract('Testing HydroGiftCard', function (accounts) {
 
         const amount = 1000
         const timestamp = Math.round(new Date() / 1000) - 1
+
+        // Recipient2 will try to redeem it
         const permission = await signRedeem(giftCardId, amount, timestamp, recipient2)
         await instances.HydroGiftCard.redeem(
           giftCardId, amount, timestamp,
@@ -665,6 +729,49 @@ contract('Testing HydroGiftCard', function (accounts) {
         )
           .then(() => assert.fail("redeemed a GiftCard the user didn't own", 'transaction should fail'))
           .catch(error => assert.include(error.message, "You aren't the owner of this gift card", 'unexpected error'))
+      })
+
+      it("Recipient can't redeem a GiftCard from a non-raindrop address", async function () {
+        // Add a new address to the buyer's identity
+        const altAddress = {
+          address: accounts[9],
+          private: "0xce5e2ea9c47caba88b3421d75023bd8c359e2aaf897e519a10a256d931028ca1"
+        }
+        let timestamp = Math.round(new Date() / 1000) - 1
+        const addAddrPermissionString = web3.utils.soliditySha3(
+          '0x19', '0x00', instances.IdentityRegistry.address,
+          'I authorize adding this address to my Identity.',
+          recipient2.identity, altAddress.address, timestamp
+        )
+        const addAddrPermission = await sign(addAddrPermissionString, recipient2.address, recipient2.private);
+        await instances.IdentityRegistry.addAssociatedAddress(
+          recipient2.address, altAddress.address,
+          addAddrPermission.v, addAddrPermission.r, addAddrPermission.s,
+          timestamp,
+          { from: altAddress.address }
+        )
+
+        // confirm
+        assert(await instances.IdentityRegistry.isAssociatedAddressFor(recipient2.identity, altAddress.address), "Newly added address was not associated with EIN")
+
+        buyGiftCard(vendor1.identity.toNumber(), offerAmounts[0], recipient2.address)
+
+        let giftCardIds = await instances.HydroGiftCard.getCustomerGiftCardIds({ from: altAddress.address })
+        assert(giftCardIds.length > 0, "recipient2 doesn't have any GiftCards")
+        let giftCardId = giftCardIds[giftCardIds.length-1]
+
+        const amount = 1000
+        timestamp = Math.round(new Date() / 1000) - 1
+
+        // recipient2 will try to redeem it from their new address instead of their raindrop addr
+        const permission = await signRedeem(giftCardId, amount, timestamp, altAddress)
+        await instances.HydroGiftCard.redeem(
+          giftCardId, amount, timestamp,
+          permission.v, permission.r, permission.s,
+          { from: altAddress.address }
+        )
+          .then(() => assert.fail("redeemed a GiftCard from a non-raindrop address", 'transaction should fail'))
+          .catch(error => assert.include(error.message, "Redeem was not approved from the clientRaindrop address", 'unexpected error'))
       })
     })
 
