@@ -22,10 +22,19 @@ _note: the current implementation does not include an expiration date as gift ca
 
 The funds are held in escrow in the `HydroGiftCard` smart contract until they are either redeemed or refunded.
 
-The typical use case would have the customer then gift the `GiftCard` to another user. The recipient must have an identity and upon transfer would be entered as the new `GiftCard.customer` EIN. This transfer can only be authorized by the current `GiftCard.customer` via a signed permission statement from an address associated with the customer's EIN.
+The typical use case would have the customer then gift the `GiftCard` to another user. The recipient must have an identity and upon transfer would be entered as the new `GiftCard.customer` EIN. This transfer can only be authorized by the current `GiftCard.customer` via a signed permission statement from the customer's ClientRaindrop address.
 
-The recipient can then redeem the `GiftCard` by spending it at the vendor. Redemption also requires a signed permission statement from an address associated with the recipient's EIN. The authorized funds can only be transferred to the vendor.
+The recipient can then redeem the `GiftCard` by spending it at the vendor. Redemption also requires a signed permission statement from the recipient's ClientRaindrop address. The authorized funds can only be transferred to the vendor.
 
 The vendor's side of redeeming a `GiftCard` is demonstrated in the `VendorSampleContract`. Its `receiveRedeemApproval()` function is analagous to an ERC20's `receiveApproval()`. It allows the vendor's smart contract to trigger the funds transfer and then complete whatever business logic it needs to attend to.
 
 A basic refund mechanism allows vendors to close out their `GiftCards` and transfer the remaining HYDRO balance out of escrow and back to the customer.
+
+## Testing With Truffle
+- This folder has a suite of tests created through [Truffle](https://github.com/trufflesuite/truffle).
+- To run these tests:
+  - Clone this repo: `git clone https://github.com/kdmukai/hydro-gift-card.git`
+  - Run `npm install`
+  - Build dependencies with `npm run build`
+  - Spin up a development blockchain: `npm run chain`
+  - In another terminal tab, run the test suite: `npm test`
