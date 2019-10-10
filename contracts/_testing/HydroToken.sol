@@ -72,7 +72,7 @@ contract HydroToken is Ownable {
     function doTransfer(address _from, address _to, uint _amount
     ) internal {
         // Do not allow transfer to 0x0 or the token contract itself
-        require((_to != address(0)) && (_to != address(this)));
+        require((_to != address(0)) && (_to != address(this)), "Can't send HYDRO back to itself");
         require(_amount <= balances[_from], "Insufficient balance");
         balances[_from] = balances[_from].sub(_amount);
         balances[_to] = balances[_to].add(_amount);
